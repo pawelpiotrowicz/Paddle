@@ -494,6 +494,46 @@ std::shared_ptr<ngraph::Function> NgraphEngine::BuildNgFunction(
 }
 
 void NgraphEngine::ClearNgCache() {
+  
+
+    protect_area();
+
+    auto curr_thread_id = getThId();
+    auto key = inter_map.getValue(curr_thread_id);
+    
+
+    {
+       auto key = inter_map.getValue(curr_thread_id);
+       auto it = engine_cache.find(key);
+       if(it!=engine_cache.end())
+       {
+            auto ng_engine = it->second;
+            backend_->remove_compiled_function(ng_engine.ngraph_handle);
+            engine_cache.erase(it);
+       }
+    } 
+
+
+  {
+       auto key = inter_map.getValue(curr_thread_id);
+
+       auto it = t_in_cache_.find(key);
+       if(it!=t_in_cache_.end())
+       {
+            auto t_vec = it->second;
+                for (auto t_in : t_vec) {
+                 t_in.reset();
+            }
+
+            t_in_cache_.erase(it);
+       }
+    } 
+
+
+
+  
+  /*
+       
   auto it = engine_cache.begin();
   while (it != engine_cache.end()) {
     auto ng_engine = it->second;
@@ -510,6 +550,9 @@ void NgraphEngine::ClearNgCache() {
     ++it_tensor;
   }
   t_in_cache_.clear();
+
+  */
+
 }
 
 void NgraphEngine::GetNgFunction(const framework::ExecutionContext& ctx) {
@@ -519,8 +562,13 @@ void NgraphEngine::GetNgFunction(const framework::ExecutionContext& ctx) {
   // set to flase, to debug cache or recompile everytime.
   bool use_cache = true;
   if (!use_cache) ClearNgCache();
+  
+  auto curr_thread_id = getThId();
 
-  this->func_cache_key_ = "";
+//  std::string  func_cache_key_ = "";
+
+ auto  func_cache_key_ = inter_map.getValue(curr_thread_id);
+
   for (int i = 0; i < static_cast<int>(feed_vars.size()); ++i) {
     auto* var = scope_.FindVar(feed_vars[i]);
     if (var && var->IsType<framework::LoDTensor>()) {
@@ -531,11 +579,15 @@ void NgraphEngine::GetNgFunction(const framework::ExecutionContext& ctx) {
       }
     }
   }
-  func_cache_key_ += std::to_string(interval[0]) + "_" +
+  func_cache_key_ += std::to_string(interval[0]) + "_" + 
+                     std::to_string(curr_thread_id) +
                      std::to_string(interval[1]) + engine_key;
   func_cache_key_ = std::to_string(std::hash<std::string>()(func_cache_key_));
 
-  if (engine_cache.find(func_cache_key_) != engine_cache.end()) {
+      inter_map.AddKey(curr_thread_id,func_cache_key_);
+      protect_area();
+
+    if (engine_cache.find(func_cache_key_) != engine_cache.end()) {
     if (engine_cache[func_cache_key_].persistables.size() == 0) {
       ClearNgCache();
     } else {
@@ -573,6 +625,10 @@ void NgraphEngine::Run(const framework::Scope& scope,
   const std::vector<std::string>* p_var_in;
   const std::vector<std::string>* p_var_out;
   bool is_test;
+ 
+  auto curr_thread_id = getThId();
+  auto func_cache_key_ = inter_map.getValue(curr_thread_id); 
+
 
   PADDLE_ENFORCE(engine_cache.find(func_cache_key_) != engine_cache.end(),
                  "Cannot find cached data to run ngraph function");

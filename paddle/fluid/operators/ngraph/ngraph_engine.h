@@ -20,7 +20,8 @@ limitations under the License. */
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-
+#include <mutex>
+#include <thread>
 #include "paddle/fluid/framework/operator.h"
 #include "paddle/fluid/framework/program_desc.h"
 #include "paddle/fluid/framework/var_desc.h"
@@ -48,6 +49,7 @@ struct EngineCache {
   bool is_test = true;
 };
 
+
 // perform graph build through bridge and execute computation
 class NgraphEngine {
  public:
@@ -66,6 +68,85 @@ class NgraphEngine {
       std::vector<std::unique_ptr<framework::OperatorBase>>* ops);
 
  private:
+
+  static bool engine_debug() {
+       static bool enabled = (std::getenv("ENGRAPH_ENGINE_DEBUG") != nullptr);
+       return enabled; 
+  }
+
+#define logme(x) if(NgraphEngine::engine_debug()) { \
+   std::cout << "[LOGMSG] thread=[" << std::hex << std::this_thread::get_id() << "] inst=[" << this << "] " << x << std::endl;  \
+}
+
+  static std::recursive_mutex& getMutex() {
+        static std::recursive_mutex mx;
+        return mx;
+  }
+
+ 
+
+#define protect_area() std::lock_guard<decltype(NgraphEngine::getMutex())> \
+lock(NgraphEngine::getMutex());
+  
+   template<class M, class K>
+   void erase_if_exists(M& m , K& key)
+   {
+       protect_area();
+       auto it = m.find(key);
+       if(it!=m.end()) m.erase(it);
+   }
+
+
+
+  typedef unsigned long long U64;
+      
+  U64 getThId() const {
+      std::stringstream ss;
+      ss << std::this_thread::get_id();
+      U64 _real_thread_id = std::stoull(ss.str());
+      return _real_thread_id;
+  }
+ 
+
+  template<class Key, class Value>
+  class IntermediateParallelMap {
+     protected:
+         std::unordered_map<Key, Value> map;
+         using guard = std::lock_guard<decltype(NgraphEngine::getMutex())>;
+     public:
+         void AddKey(Key key, Value val)
+        {
+           guard lock(NgraphEngine::getMutex()); 
+           auto it = map.find(key);
+           if(it==map.end())
+                    map[key]=val;          
+        }
+
+         void RemoveKey(Key key)
+        {
+           guard lock(NgraphEngine::getMutex()); 
+           auto it = map.find(key);
+           if(it!=map.end())
+                  map.erase(it);
+
+        }
+
+       Value getValue(Key key) const {
+
+           Value val;
+           guard lock(NgraphEngine::getMutex()); 
+           auto it = map.find(key);
+           if(it!=map.end())
+                return it->second;
+            return val;
+        }
+
+  } ;
+public:
+  IntermediateParallelMap<U64,std::string> inter_map;
+private:
+
+
   static std::unordered_map<std::string, EngineCache> engine_cache;
   static std::unordered_map<
       std::string, std::vector<std::shared_ptr<ngraph::runtime::Tensor>>>
@@ -80,7 +161,7 @@ class NgraphEngine {
   std::unordered_set<std::string> post_op_inputs_;
   OpState op_state_ = OpState::UNKNOWN;
   bool is_test_{true};
-  std::string func_cache_key_;
+ // std::string func_cache_key_;
 
   // ngraph backend eg. CPU
   static std::shared_ptr<ngraph::runtime::Backend> backend_;
@@ -115,6 +196,12 @@ class NgraphEngine {
   // Check cache for ngraph function or otherwise build the function
   void GetNgFunction(const framework::ExecutionContext& ctx);
 };
+
+/*
+ template<class Key, class Value>
+ std::unordered_map<Key, Value>
+ NgraphEngine::IntermediateParallelMap<Key,Value>::inter_map;
+*/
 
 }  // namespace operators
 }  // namespace paddle
