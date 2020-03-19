@@ -87,7 +87,8 @@ class FetchOp : public framework::OperatorBase {
             src_item.layout(),
             fetch_var_name == framework::GradVarName("Filter")
                 ? framework::DataLayout::kNCHW
-                : paddle::platform::get_cur_paddle_data_layout(),
+                : paddle::platform::MKLDNNDeviceContext::tls()
+                      .get_cur_paddle_data_layout(),
             src_item, &out, platform::CPUPlace());
         TensorCopySync(out, platform::CPUPlace(), &dst_item);
       } else {
