@@ -541,6 +541,17 @@ class FCMKLDNNOpKernel : public framework::OpKernel<T_in> {
                          fuse_relu, force_fp32_output);
 
     output->set_layout(DataLayout::kMKLDNN);
+    if(output->hasType<float>())
+    {
+      framework::TensorDumpConfig<>::get().getOutputStream() << output->toStream<float>("fc_mkldnn_fwd");
+    }
+    else if (output->hasType<int8_t>())
+    {
+      framework::TensorDumpConfig<>::get().getOutputStream() << output->toStream<int8_t>("fc_mkldnn_fwd");
+    } else {
+       framework::TensorDumpConfig<>::get().getOutputStream() << output->toStream<uint8_t>("fc_mkldnn_fwd");
+    }
+       
   }
 };
 }  // namespace operators

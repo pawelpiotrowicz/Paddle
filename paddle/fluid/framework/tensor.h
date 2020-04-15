@@ -20,6 +20,7 @@ limitations under the License. */
 #include <typeindex>
 #include <utility>
 #include <vector>
+#include "boost/crc.hpp"
 #include "paddle/fluid/framework/data_layout.h"
 #include "paddle/fluid/framework/ddim.h"
 #include "paddle/fluid/framework/framework.pb.h"
@@ -27,12 +28,123 @@ limitations under the License. */
 #include "paddle/fluid/platform/device_context.h"
 #include "paddle/fluid/platform/enforce.h"
 #include "paddle/fluid/platform/place.h"
+#include "paddle/fluid/framework/data_type.h"
 
 namespace paddle {
 
 namespace framework {
 
 class LoDTensor;
+
+class Tensor;
+
+template<class U>
+struct TensorOutStreamer {
+      typedef TensorOutStreamer<U> self;
+      const std::string name;
+      const Tensor& tensor;
+      size_t limit;
+      TensorOutStreamer(const std::string& name,const Tensor& _tensor);
+      self& setLimit(size_t _limit);      
+      const U* begin() const;
+      const U* end() const;
+      int checksum() const;
+};
+
+template<int version=0>
+class TensorDumpConfig
+{
+  protected:
+   std::vector<std::string> split(const std::string& s, char delimiter)
+   {
+     std::vector<std::string> tokens;
+     std::string token;
+     std::istringstream tokenStream(s);
+     while (std::getline(tokenStream, token, delimiter))
+     {
+        tokens.push_back(token);
+     }
+     return tokens;  
+   }
+    
+    template<class F>
+    void env_exe(const char* name, F f)
+    {
+         auto* env = std::getenv(name);
+         if(env)
+         {
+             f(env);
+         }
+    }
+
+    size_t limit_1;
+    size_t limit_4;
+    std::string filename; 
+    std::vector<std::string> ops;
+    TensorDumpConfig() : limit_1(128), limit_4(128), filename("/tmp/tensor_dump.txt")
+    {
+         env_exe("TENSOR_DUMP_FILE",[this](const char* value)
+         {
+             filename = value;
+         });
+
+         env_exe("TENSOR_DUMP_LIMIT_SIZEOF_1",[this](const char* value)
+         {
+               std::stringstream ss;
+               ss << value;
+               ss >> limit_1;              
+         });
+    
+         env_exe("TENSOR_DUMP_LIMIT_SIZEOF_4",[this](const char* value)
+         {
+               std::stringstream ss;
+               ss << value;
+               ss >> limit_4;              
+         });
+
+         env_exe("TENSOR_DUMP_OPERATORS",[this](const char* value)
+         {
+              if(strlen(value))
+              {
+                 ops = split(value,',');
+              }            
+         }); 
+    }
+  public:
+    bool hasOperator(const std::string& name)
+    {
+        return std::find(ops.begin(),ops.end(),name)!=ops.end();
+    }
+    const std::string& getFilename() { return filename; }
+    std::ofstream& getOutputStream() 
+    {
+       static std::unique_ptr<std::ofstream> ptr(new std::ofstream(filename.c_str()));
+       return *ptr;
+    }
+    size_t getLimit_1() { return limit_1; }
+    size_t getLimit_4() { return limit_4; } 
+    size_t getLimitViaSize(int size)
+    {
+        return (size == 1) ? limit_1 : limit_4;
+    }
+    static TensorDumpConfig<version>& get() 
+    {
+       static TensorDumpConfig<version> inst;
+       return inst;
+    }  
+    static size_t NextRecord()
+    {
+       static size_t seq=0;
+       return seq++;
+    }  
+
+    static std::mutex& getMutex() {
+          static std::mutex mx;
+          return mx;
+    }   
+};
+
+
 
 class Tensor {
 #ifdef PADDLE_WITH_MKLDNN
@@ -79,6 +191,12 @@ class Tensor {
   /*! Return a pointer to constant memory block. */
   template <typename T>
   const T* data() const;
+
+  template<class T>
+  bool hasType()
+  {
+     return type_ == ::paddle::framework::DataTypeTrait<T>::DataType();
+  }
 
   inline bool IsInitialized() const;
 
@@ -211,7 +329,163 @@ class Tensor {
    *          PlaceHolder::ptr_ and where the tensor data really begins.
    */
   size_t offset_;
+  
+  public:  
+  template<class U>
+  TensorOutStreamer<U> toStream(const std::string& name) 
+  {
+       return TensorOutStreamer<U>(name,*this);
+  } 
+ 
+ /*  
+  static std::unique_ptr<std::ofstream>& getFile() 
+  {
+        static std::unique_ptr<std::ofstream> ptr(new std::ofstream("/tmp/dump_tensors.txt"));
+        return ptr;
+  }
+*/
 };
+
+
+template<class I, class F>
+void for_each_no_more(I b, I e, std::size_t count, F f)
+{
+   if(count)
+   {
+      for(;count && b!=e; ++b,--count)
+      {
+         f(*b);
+      }
+   }
+   else
+   {
+      for(;b!=e; ++b)
+      {
+         f(*b);
+      }
+   }
+   
+
+}
+
+template<class U>
+TensorOutStreamer<U>::TensorOutStreamer(const std::string& _name, const Tensor& _tensor) : name(_name),tensor(_tensor), limit(0)
+{
+      
+}
+
+template<class U>
+TensorOutStreamer<U>& TensorOutStreamer<U>::setLimit(size_t _limit)
+{
+   limit = _limit;
+   return *this;
+}
+
+template<class U>
+const U* TensorOutStreamer<U>::begin() const
+{  
+  return tensor.data<U>();
+}
+
+template<class U>
+const U* TensorOutStreamer<U>::end() const 
+{
+  return begin() + tensor.memory_size()/sizeof(U);
+}
+
+
+template<class U>
+int TensorOutStreamer<U>::checksum() const
+{
+    boost::crc_32_type result;
+    result.process_bytes(reinterpret_cast<const unsigned char*>(begin()), tensor.memory_size());
+    return result.checksum();
+}
+ 
+
+
+
+
+template<class U>
+struct type_desc;
+
+template<>
+struct type_desc<signed char>
+{
+   enum { pad = 2, break_line=256 };
+   static const char* name() {  return "signed_char"; }
+   static std::ostream& format(std::ostream& out,signed char  v)
+   {    
+        out <<  std::setw(pad) << std::setfill('0') << std::hex << ((int)v & 0xFF);   
+        return out;
+   }
+};
+
+template<>
+struct type_desc<unsigned char>
+{
+   enum { pad = 2, break_line=256 };
+   static const char* name() {  return "unsigned_char"; }
+   static std::ostream& format(std::ostream& out, unsigned char v)
+   {        
+        out << std::setw(pad) << std::setfill('0') << std::hex << ((int)v & 0xFF);   
+        return out;
+   }
+};
+
+
+template<>
+struct type_desc<float>
+{
+    enum { pad = 8, break_line=32 };
+    static const char* name() {  return "float"; }
+    static std::ostream& format(std::ostream& out, float v)
+    {
+        out << std::setw(pad) << std::setfill(' ') << v << " ";
+        return out;
+    }
+   
+};
+
+
+
+template<class U> 
+std::ostream& operator<<(std::ostream& out, const TensorOutStreamer<U>& ts)
+{   
+   if(!(TensorDumpConfig<>::get().hasOperator(ts.name)))
+   {
+       return out;   
+   } 
+
+   auto& tensor = ts.tensor; 
+   auto& dims = tensor.dims();
+   auto& conf = TensorDumpConfig<>::get();
+  //  std::lock_guard<std::mutex> lock(TensorDumpConfig<>::getMutex());  
+   out << std::setw(8) << std::setfill(' ') 
+   << (TensorDumpConfig<>::NextRecord()) << ") type=["<< type_desc<U>::name()<< "]  => "<< ts.name 
+   << " crc32=" << std::hex << ts.checksum() 
+   << std::dec << "  elem="  << tensor.numel()
+   << "  " << " dims=" << dims.size() << "=>";
+
+   for(decltype(dims.size()) i=0;i<dims.size();++i)
+   {
+     out << "[" << dims.at(i) << "]";
+   }   
+   out << std::endl;
+   std::size_t br = 0;
+   
+   for_each_no_more(ts.begin(),ts.end(),conf.getLimitViaSize(sizeof(U)) ,[&out,&br](U unit)
+   {   
+        if(type_desc<U>::break_line == br++)
+        {
+           br=0;
+           out << std::endl;
+        }
+        type_desc<U>::format(out,unit) << std::dec;
+   }); 
+   out << std::endl;          
+   return out;
+}
 
 }  // namespace framework
 }  // namespace paddle

@@ -100,6 +100,19 @@ void eltwise_forward(const framework::ExecutionContext &ctx,
 
   y->set_layout(DataLayout::kMKLDNN);
   y->set_format(GetMKLDNNFormat(*dst_memory_p));
+   
+  if(algorithm==mkldnn::algorithm::eltwise_tanh)
+  {
+     framework::TensorDumpConfig<>::get().getOutputStream() << y->toStream<T>("elemwise_fwd{tanh}");
+  }
+  else if (algorithm==mkldnn::algorithm::eltwise_relu)
+  {
+     framework::TensorDumpConfig<>::get().getOutputStream() << y->toStream<T>("elemwise_fwd{relu}");
+  }
+  else
+  {
+     framework::TensorDumpConfig<>::get().getOutputStream() << y->toStream<T>("elemwise_fwd");
+  }
 }
 
 template <typename T>

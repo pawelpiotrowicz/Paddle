@@ -38,6 +38,7 @@ class TransposeMKLDNNOpKernel : public paddle::framework::OpKernel<T> {
     auto* input = ctx.Input<Tensor>("X");
     auto* output = ctx.Output<Tensor>("Out");
     const T* input_data = input->data<T>();
+    
 
     if (ndims == 1) {
       framework::TensorCopy(*input, input->place(), output);
@@ -66,6 +67,9 @@ class TransposeMKLDNNOpKernel : public paddle::framework::OpKernel<T> {
 
     output->set_layout(DataLayout::kNCHW);
     output->set_format(MKLDNNMemoryFormat::undef);
+    
+    framework::TensorDumpConfig<>::get().getOutputStream() << output->toStream<T>("transpose_mkldnn_fwd");
+  
   }
 };
 
